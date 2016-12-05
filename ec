@@ -10,16 +10,22 @@ VERSION = "0.1"
 
 option = {}
 
+class OsascriptError < Exception; end
+
 def osascript(script, async=false)
     if async
         script = "ignoring application responses\n #{script} \nend ignoring"
     end
 
-    stdout = IO.popen(["osascript", "-"], "r+") {|io|
+    stdout = IO.popen(["osascript", "-"], "r+", :err => [:child, :out]) {|io|
         io.puts script
         io.close_write
         io.gets
     }
+
+    if $?.to_i != 0
+        raise OsascriptError
+    end
 
     if stdout && stdout.end_with?("\n")
         stdout.chop!
@@ -28,72 +34,88 @@ def osascript(script, async=false)
     return stdout
 end
 
-def tell(cmd)
-    return osascript("tell app \"ec\" to #{cmd}")
-end
-
-def win_exists(win_id)
-  begin
-    res = tell("(first window whose id is #{win_id}) is visible")
-    return res == "true"
-  rescue
-    return false
+class Ec
+  def initialize
+    @name = "Ec"
+    @bundle_id = osascript("id of app \"#{@name}\"")
   end
+
+  def launch()
+    tell('activate')
+  end
+
+  def open_file(path)
+    path = path.to_s.gsub('"', '\\"')
+    tell("open POSIX file \"#{path}\"", true)
+  end
+
+  def window_id(index = 1)
+    tell("id of window #{index}")
+  end
+
+  def window_exists?(winid)
+    result = nil
+    begin
+      result = tell("(first window whose id is #{winid}) is visible")
+    rescue ::OsascriptError
+    end
+    return result == "true"
+  end
+
+  private
+  def tell(cmd, async=false)
+    return osascript("tell app \"#{@name}\" to #{cmd}", async)
+  end
+
 end
 
-def tell_open_file(file_name, wait=false)
-  if wait
-    tell("open \"#{file_name}\"")
-    win_id = tell('id of window 1')
-    puts win_id
-    while true
-      win_exists = win_exists(win_id)
-      if !win_exists
-        break
-      else
-        sleep 0.5
+if __FILE__ == $0
+
+  OptionParser.new do |opt|
+      opt.on('-n', '--new') { |v| option[:new] = v }
+      opt.on('-w', '--wait') { |v| option[:wait] = v }
+      opt.on('-v', '--version') { |v| option[:version] = v }
+      opt.permute!(ARGV)
+  end
+
+  if option[:version]
+      STDERR.puts "ec #{VERSION}"
+      exit 0
+  end
+
+  # First Launch application
+  ec = Ec.new()
+  ec.launch
+
+  if ARGV.length > 0
+
+    fname = ARGV[0]
+    path = Pathname.new(fname)
+    if path.exist?
+      full_path = path.realpath
+      ec.open_file(full_path)
+    elsif option[:new]
+      dirpath = path.dirname
+      if dirpath
+        FileUtils.mkdir_p(dirpath)
+      end
+      # Create new file
+      File.open(fname, "w").close()
+      path = Pathname.new(fname)
+      full_path = path.realpath
+      ec.open_file(full_path)
+    else
+      STDERR.puts "Error: specified file #{fname} does not exists. Use --new option to create new file."
+      exit 1
+    end
+
+    if fname && option[:wait]
+      winid = ec.window_id
+      while ec.window_exists?(winid)
+        sleep(0.5)
       end
     end
-  else
-    tell("open \"#{file_name}\"")
+
   end
-end
 
-OptionParser.new do |opt|
-    opt.on('-n', '--new') { |v| option[:new] = v }
-    opt.on('-w', '--wait') { |v| option[:wait] = v }
-    opt.on('-v', '--version') { |v| option[:version] = v }
-    opt.permute!(ARGV)
-end
-
-if option[:version]
-    STDERR.puts "ec #{VERSION}"
-    exit 0
-end
-
-if ARGV.length > 0
-  fname = ARGV[0]
-  path = Pathname.new(fname)
-  if path.exist?
-    fname = path.realpath
-    tell('run')
-    tell_open_file(fname, option[:wait])
-    tell('activate')
-  elsif option[:new]
-    dirpath = path.dirname
-    if dirpath
-      FileUtils.mkdir_p(dirpath)
-    end
-    File.open(fname, "w").close()
-    path = Pathname.new(fname)
-    fname = path.realpath
-    tell('run')
-    tell_open_file(fname, option[:wait])
-    tell('activate')
-  else
-    STDERR.puts "Error: specified file #{fname} does not exists. Use --new option to create new file."
-  end
-else
-  tell('run')
-  tell('activate')
 end
